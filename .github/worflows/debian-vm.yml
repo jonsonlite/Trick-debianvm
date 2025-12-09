@@ -1,0 +1,63 @@
+name: Debian VM 24/7 (Tailscale + SSH Remote Forward)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"   # revive automático cada 6h
+  workflow_call:
+
+jobs:
+  debian:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # máximo permitido
+
+    steps:
+    - name: KeepAlive Loop (mantener VM viva)
+      run: |
+        echo "Manteniendo la máquina viva..."
+        nohup bash -c "while true; do echo 'VM activa - $(date)'; sleep 60; done" &
+
+    - name: Instalar dependencias
+      run: |
+        sudo apt update
+        sudo apt install -y openssh-server curl
+
+    - name: Habilitar SSH local
+      run: |
+        sudo mkdir -p /var/run/sshd
+        sudo sed -i 's/#Port 22/Port 22/' /etc/ssh/sshd_config
+        sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+        echo "root:githubvm" | sudo chpasswd
+        sudo systemctl restart ssh
+
+    - name: Instalar Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+
+    - name: Iniciar Tailscale (login automático con auth key)
+      env:
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      run: |
+        sudo tailscale up --ssh --authkey ${TS_AUTHKEY} --accept-routes --accept-dns
+
+    - name: Mostrar IP Tailscale
+      run: |
+        echo "IP Tailscale:"
+        tailscale ip -4
+
+    - name: Activar SSH Remote Forwarding (puerto 2222 → Tailscale)
+      run: |
+        echo "Creando túnel SSH remoto..."
+        # Reenvía el SSH local al puerto 2222 accesible desde tu PC
+        ssh -o StrictHostKeyChecking=no \
+            -R 2222:localhost:22 \
+            $(tailscale ip -4):22 \
+            -N &
+
+        echo "Túnel creado. Puedes conectarte así:"
+        echo "ssh root@$(tailscale ip -4) -p 2222"
+
+    - name: Mantener Workflow vivo hasta 350 minutos
+      run: |
+        echo "VM activa por 350 minutos..."
+        sleep $((350*60))
